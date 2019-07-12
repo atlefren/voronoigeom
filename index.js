@@ -22,18 +22,44 @@ const bboxToPoly = bbox => [
   [bbox[0], bbox[1]]
 ];
 
+const coordInBBOX = bbox => [
+  Math.random() * (bbox[2] - bbox[0]) + bbox[0],
+  Math.random() * (bbox[3] - bbox[1]) + bbox[1]
+];
+
 /**
  * Merge an array of polygons
  */
 const mergePolys = polys => {
   let merged = polys.pop();
-
   while (polys.length) {
     const p = polys.pop();
     merged = merged.union(p);
   }
   return merged;
 };
+
+const coordsEqual = (a, b) => a[0] === b[0] && a[1] === b[1];
+
+const intersects = (feature, coord) => {
+  const p = toPoint(coord);
+  const f = geoJSONReader.read(feature.geometry);
+  return f.intersects(p);
+};
+
+const collides = (coord, coords, features) =>
+  coords.some(c => coordsEqual(c, coord)) || features.some(f => intersects(f, coord));
+
+const createCoords = (bounds, avoid, numCoordinates) =>
+  range(numCoordinates).reduce((acc, i) => {
+    let coord = coordInBBOX(bounds);
+
+    while (collides(coord, acc, avoid)) {
+      coord = coordInBBOX(bounds);
+    }
+
+    return [...acc, coord];
+  }, []);
 
 /**
  * Convert MultiGeoms to a individual components
@@ -139,7 +165,7 @@ const getCoordinates = features => {
       const b = line[i];
       const interpolated = getInterpolatedPoints(a, b, averageLength);
       normalized = [...normalized, ...interpolated];
-      if (line[0][0] !== b[0] && line[0][1] !== b[1]) {
+      if (!coordsEqual(line[0], b)) {
         //do not add last point of polygon again
         normalized.push(b);
       }
@@ -166,18 +192,22 @@ const jstsVoronoi = coordinates => {
 const groupByFeature = (voronoiPolys, features) => {
   const jstsGeoms = features.map(f => geoJSONReader.read(f.geometry));
   const groups = range(jstsGeoms.length).map(i => []);
+  const orphans = [];
 
   const numGeoms = voronoiPolys.getNumGeometries();
   for (let i = 0; i < numGeoms; i++) {
     const geom = voronoiPolys.getGeometryN(i);
     const idx = jstsGeoms.findIndex(g => g.intersects(geom));
-    groups[idx].push(geom);
+    if (idx === -1) {
+      orphans.push([geom]);
+    } else {
+      groups[idx].push(geom);
+    }
   }
-  return groups;
+  return [...groups, ...orphans];
 };
 
-const mergeVoronoiPolys = (voronoiPolys, features) => {
-  const bounds = getFeatureBounds(features);
+const mergeVoronoiPolys = (voronoiPolys, features, bounds) => {
   const all = geoJSONReader.read({type: 'Polygon', coordinates: [bboxToPoly(bounds)]});
 
   return groupByFeature(voronoiPolys, features)
@@ -188,18 +218,19 @@ const mergeVoronoiPolys = (voronoiPolys, features) => {
 /**
  * Create a set of voronoi polygons for a set of geometries
  */
-const voronoiGeom = originalFeatures => {
-  console.time('VoronioGeom');
+const voronoiGeom = (originalFeatures, numEmpty = 0) => {
   const features = getSimpleFeatures(originalFeatures);
+  const bounds = getFeatureBounds(features);
 
-  const coordinates = getCoordinates(features);
+  let coordinates = getCoordinates(features);
+  if (numEmpty > 0) {
+    coordinates = [...coordinates, ...createCoords(bounds, features, numEmpty)];
+  }
 
   const voronoiPolys = jstsVoronoi(coordinates);
-  const merged = mergeVoronoiPolys(voronoiPolys, features);
+  const merged = mergeVoronoiPolys(voronoiPolys, features, bounds);
 
   const res = merged.map(mp => ({type: 'Feature', geometry: geoJSONWriter.write(mp)}));
-
-  console.timeEnd('VoronioGeom');
   return res;
 };
 

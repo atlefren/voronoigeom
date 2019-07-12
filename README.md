@@ -17,7 +17,8 @@ const voronoiPolys = voronoiGeom(features);
 // an array of GeoJson Polygon Features
 ```
 
-When passing in multi-geometries, a voronoi polygon is generated for each part of the multi-geom
+- When passing in multi-geometries, a voronoi polygon is generated for each part of the multi-geom
+- In order to create additional Voronoi polygons (ie empty polygons), pass a number as the second argument to voronoiGeom.
 
 ## Limitations
 
