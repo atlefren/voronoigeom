@@ -12,6 +12,13 @@ const tail = lst => lst.slice(1);
 
 const getFeatureBounds = features => turfBbox({type: 'FeatureCollection', features});
 
+const extendBounds = (bounds, fraction) => {
+  const width = Math.abs(bounds[3] - bounds[1]);
+  const height = Math.abs(bounds[2] - bounds[0]);
+  const extend = Math.min(width, height) * fraction;
+  return [bounds[0] - extend, bounds[1] - extend, bounds[2] + extend, bounds[3] + extend];
+};
+
 const toPoint = coord => geometryFactory.createPoint(new jsts.geom.Coordinate(coord[0], coord[1]));
 
 const bboxToPoly = bbox => [
@@ -220,7 +227,7 @@ const mergeVoronoiPolys = (voronoiPolys, features, bounds) => {
  */
 const voronoiGeom = (originalFeatures, numEmpty = 0) => {
   const features = getSimpleFeatures(originalFeatures);
-  const bounds = getFeatureBounds(features);
+  const bounds = extendBounds(getFeatureBounds(features), 0.01);
 
   let coordinates = getCoordinates(features);
   if (numEmpty > 0) {
