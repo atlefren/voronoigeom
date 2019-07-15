@@ -8,8 +8,6 @@ const geoJSONWriter = new jsts.io.GeoJSONWriter();
 
 const range = n => [...Array(n).keys()];
 
-const tail = lst => lst.slice(1);
-
 const getFeatureBounds = features => turfBbox({type: 'FeatureCollection', features});
 
 const extendBounds = (bounds, fraction) => {
@@ -199,12 +197,13 @@ const jstsVoronoi = coordinates => {
 const groupByFeature = (voronoiPolys, features) => {
   const jstsGeoms = features.map(f => geoJSONReader.read(f.geometry));
   const groups = range(jstsGeoms.length).map(i => []);
-  const orphans = [];
 
+  const orphans = [];
   const numGeoms = voronoiPolys.getNumGeometries();
   for (let i = 0; i < numGeoms; i++) {
     const geom = voronoiPolys.getGeometryN(i);
     const idx = jstsGeoms.findIndex(g => g.intersects(geom));
+
     if (idx === -1) {
       orphans.push([geom]);
     } else {
@@ -214,12 +213,8 @@ const groupByFeature = (voronoiPolys, features) => {
   return [...groups, ...orphans];
 };
 
-const mergeVoronoiPolys = (voronoiPolys, features, bounds) => {
-  const all = geoJSONReader.read({type: 'Polygon', coordinates: [bboxToPoly(bounds)]});
-
-  return groupByFeature(voronoiPolys, features)
-    .map(polygons => mergePolys(polygons)) //merge the polygons belonging to each feature
-    .map(poly => all.intersection(poly)); //cut the diagram to the bounds of the features
+const mergeVoronoiPolys = (voronoiPolys, features) => {
+  return groupByFeature(voronoiPolys, features).map(polygons => mergePolys(polygons)); //merge the polygons belonging to each feature
 };
 
 /**
@@ -230,14 +225,23 @@ const voronoiGeom = (originalFeatures, numEmpty = 0) => {
   const bounds = extendBounds(getFeatureBounds(features), 0.01);
 
   let coordinates = getCoordinates(features);
-  if (numEmpty > 0) {
-    coordinates = [...coordinates, ...createCoords(bounds, features, numEmpty)];
+
+  let merged = [];
+  let i = 0;
+  while (merged.length < numEmpty + features.length) {
+    const empty = numEmpty > 0 ? createCoords(bounds, features, numEmpty) : [];
+    const voronoiPolys = jstsVoronoi([...coordinates, ...empty]);
+    merged = mergeVoronoiPolys(voronoiPolys, features);
+    i++;
+    if (i > 1000) {
+      throw new Error('Could not create enough polygons on 1000 tries');
+    }
   }
 
-  const voronoiPolys = jstsVoronoi(coordinates);
-  const merged = mergeVoronoiPolys(voronoiPolys, features, bounds);
-
-  const res = merged.map(mp => ({type: 'Feature', geometry: geoJSONWriter.write(mp)}));
+  const all = geoJSONReader.read({type: 'Polygon', coordinates: [bboxToPoly(bounds)]});
+  const res = merged
+    .map(poly => all.intersection(poly)) //cut the diagram to the bounds of the features;
+    .map(mp => ({type: 'Feature', geometry: geoJSONWriter.write(mp)}));
   return res;
 };
 
