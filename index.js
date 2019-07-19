@@ -34,7 +34,7 @@ const coordInBBOX = bbox => [
 
 const coordInPolygon = polygon => {
   const jstsGeom = geoJSONReader.read(polygon.geometry);
-  const bbox = turfBbox(p);
+  const bbox = turfBbox(polygon);
   let coord = coordInBBOX(bbox);
   while (!jstsGeom.contains(toPoint(coord))) {
     coord = coordInBBOX(bbox);
@@ -242,7 +242,7 @@ const voronoiGeom = (originalFeatures, numEmpty = 0, boundingFeature = undefined
   let merged = [];
   let i = 0;
   while (merged.length < numEmpty + features.length) {
-    const empty = numEmpty > 0 ? createCoords(bounds, features, numEmpty) : [];
+    const empty = numEmpty > 0 ? createCoords(boundingFeature ? boundingFeature : bounds, features, numEmpty) : [];
     const voronoiPolys = jstsVoronoi([...coordinates, ...empty]);
     merged = mergeVoronoiPolys(voronoiPolys, features);
     i++;
