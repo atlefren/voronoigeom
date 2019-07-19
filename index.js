@@ -32,6 +32,16 @@ const coordInBBOX = bbox => [
   Math.random() * (bbox[3] - bbox[1]) + bbox[1]
 ];
 
+const coordInPolygon = polygon => {
+  const jstsGeom = geoJSONReader.read(polygon.geometry);
+  const bbox = turfBbox(p);
+  let coord = coordInBBOX(bbox);
+  while (!jstsGeom.contains(toPoint(coord))) {
+    coord = coordInBBOX(bbox);
+  }
+  return coord;
+};
+
 /**
  * Merge an array of polygons
  */
@@ -55,16 +65,19 @@ const intersects = (feature, coord) => {
 const collides = (coord, coords, features) =>
   coords.some(c => coordsEqual(c, coord)) || features.some(f => intersects(f, coord));
 
-const createCoords = (bounds, avoid, numCoordinates) =>
-  range(numCoordinates).reduce((acc, i) => {
-    let coord = coordInBBOX(bounds);
+const createCoords = (bounds, avoid, numCoordinates) => {
+  const getCoord = Array.isArray(bounds) ? coordInBBOX : coordInPolygon;
+
+  return range(numCoordinates).reduce((acc, i) => {
+    let coord = getCoord(bounds);
 
     while (collides(coord, acc, avoid)) {
-      coord = coordInBBOX(bounds);
+      coord = getCoord(bounds);
     }
 
     return [...acc, coord];
   }, []);
+};
 
 /**
  * Convert MultiGeoms to a individual components
@@ -220,7 +233,7 @@ const mergeVoronoiPolys = (voronoiPolys, features) => {
 /**
  * Create a set of voronoi polygons for a set of geometries
  */
-const voronoiGeom = (originalFeatures, numEmpty = 0) => {
+const voronoiGeom = (originalFeatures, numEmpty = 0, boundingFeature = undefined) => {
   const features = getSimpleFeatures(originalFeatures);
   const bounds = extendBounds(getFeatureBounds(features), 0.01);
 
@@ -238,7 +251,9 @@ const voronoiGeom = (originalFeatures, numEmpty = 0) => {
     }
   }
 
-  const all = geoJSONReader.read({type: 'Polygon', coordinates: [bboxToPoly(bounds)]});
+  const all = boundingFeature
+    ? geoJSONReader.read(boundingFeature.geometry)
+    : geoJSONReader.read({type: 'Polygon', coordinates: [bboxToPoly(bounds)]});
   const res = merged
     .map(poly => all.intersection(poly)) //cut the diagram to the bounds of the features;
     .map(mp => ({type: 'Feature', geometry: geoJSONWriter.write(mp)}));
