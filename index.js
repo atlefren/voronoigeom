@@ -83,7 +83,7 @@ const createCoords = (bounds, avoid, numCoordinates) => {
  * Convert MultiGeoms to a individual components
  * Remove holes of polygons
  */
-const getSimpleFeatures = features =>
+const getSimpleFeatures = (features, averageLineLength) =>
   features
     .reduce((acc, f) => {
       if (f.geometry.type.startsWith('Multi')) {
@@ -102,7 +102,7 @@ const getSimpleFeatures = features =>
         return [...acc, f];
       }
     }, [])
-    .map(f => simplify(f, {tolerance: 0.0001, highQuality: false}));
+    .map(f => simplify(f, {tolerance: averageLineLength, highQuality: false}));
 
 /**
  * Get fractions along a line, ie:
@@ -156,12 +156,8 @@ const getInterpolatedPoints = (c1, c2, averageLength) => {
   return points;
 };
 
-/**
- * Get the individual coordinates that makes up a geometry
- * Makes sure there are no long streches, as this messes up the process
- */
-const getCoordinates = features => {
-  const lines = features.map(f => {
+const getLines = features =>
+  features.map(f => {
     if (f.geometry.type === 'Point') {
       return [f.geometry.coordinates];
     }
@@ -173,15 +169,19 @@ const getCoordinates = features => {
     }
   });
 
-  const averageLength = getAverageLength(lines);
-
+/**
+ * Get the individual coordinates that makes up a geometry
+ * Makes sure there are no long streches, as this messes up the process
+ */
+const getCoordinates = (features, averageLineLength) => {
+  const lines = getLines(features);
   let normalized = [];
   for (let line of lines) {
     normalized.push(line[0]);
     for (let i = 1; i < line.length; i++) {
       const a = line[i - 1];
       const b = line[i];
-      const interpolated = getInterpolatedPoints(a, b, averageLength);
+      const interpolated = getInterpolatedPoints(a, b, averageLineLength);
       normalized = [...normalized, ...interpolated];
       if (!coordsEqual(line[0], b)) {
         //do not add last point of polygon again
@@ -230,33 +230,90 @@ const mergeVoronoiPolys = (voronoiPolys, features) => {
   return groupByFeature(voronoiPolys, features).map(polygons => mergePolys(polygons)); //merge the polygons belonging to each feature
 };
 
+const isDiagramValid = (originalFeatures, emptyPoints, diagramFeatures) => {
+  for (let f of originalFeatures) {
+    const fg = geoJSONReader.read(f.geometry);
+    const numContaining = diagramFeatures.filter(a => a.contains(fg)).length;
+    if (numContaining !== 1) {
+      return false;
+    }
+  }
+
+  for (let i of emptyPoints) {
+    const ig = toPoint(i);
+    const numContaining = diagramFeatures.filter(b => b.contains(ig)).length;
+    if (numContaining !== 1) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const createVoronoiDiagram = (features, extraCoords, averageLineLength) => {
+  const simplifiedFeatures = getSimpleFeatures(features, averageLineLength);
+  let coordinates = getCoordinates(simplifiedFeatures, averageLineLength);
+  const voronoiPolys = jstsVoronoi([...coordinates, ...extraCoords]);
+  return mergeVoronoiPolys(voronoiPolys, features);
+};
+
+const getVoronoiFeatures = (originalFeatures, createCoords, averageLineLength, numCreate) => {
+  let extraCoords = createCoords();
+  let c = 0;
+  while (true) {
+    if (c > 1000) {
+      throw new Error('Cannot generate in 1000 tries');
+    }
+    voronoiFeatures = createVoronoiDiagram(originalFeatures, extraCoords, averageLineLength);
+    if (voronoiFeatures.length !== numCreate) {
+      //place coords elsewhere to see if this helps
+      extraCoords = createCoords();
+    } else if (!isDiagramValid(originalFeatures, extraCoords, voronoiFeatures)) {
+      //make mesh denser to avoid collisions
+      averageLineLength = averageLineLength / 2;
+    } else {
+      return voronoiFeatures;
+    }
+    c++;
+  }
+};
+
 /**
  * Create a set of voronoi polygons for a set of geometries
  */
 const voronoiGeom = (originalFeatures, numEmpty = 0, boundingFeature = undefined) => {
-  const features = getSimpleFeatures(originalFeatures);
-  const bounds = extendBounds(getFeatureBounds(features), 0.01);
-
-  let coordinates = getCoordinates(features);
-
-  let merged = [];
-  let i = 0;
-  while (merged.length < numEmpty + features.length) {
-    const empty = numEmpty > 0 ? createCoords(boundingFeature ? boundingFeature : bounds, features, numEmpty) : [];
-    const voronoiPolys = jstsVoronoi([...coordinates, ...empty]);
-    merged = mergeVoronoiPolys(voronoiPolys, features);
-    i++;
-    if (i > 1000) {
-      throw new Error('Could not create enough polygons on 1000 tries');
-    }
+  if (originalFeatures.length === 0 && numEmpty === 0) {
+    return [];
   }
+
+  let averageLineLength = getAverageLength(getLines(originalFeatures));
+  const bounds = extendBounds(getFeatureBounds(originalFeatures), 0.01);
+
+  const doCreateCoords = () =>
+    numEmpty > 0 ? createCoords(boundingFeature ? boundingFeature : bounds, originalFeatures, numEmpty) : [];
+
+  const numCreate = numEmpty + originalFeatures.length;
+  const voronoiFeatures = getVoronoiFeatures(originalFeatures, doCreateCoords, averageLineLength, numCreate);
 
   const all = boundingFeature
     ? geoJSONReader.read(boundingFeature.geometry)
     : geoJSONReader.read({type: 'Polygon', coordinates: [bboxToPoly(bounds)]});
-  const res = merged
+  const res = voronoiFeatures
     .map(poly => all.intersection(poly)) //cut the diagram to the bounds of the features;
-    .map(mp => ({type: 'Feature', geometry: geoJSONWriter.write(mp)}));
+    .map(mp => ({type: 'Feature', geometry: geoJSONWriter.write(mp)}))
+    .reduce(
+      (acc, p) =>
+        p.geometry.type === 'MultiPolygon'
+          ? [
+              ...acc,
+              ...p.geometry.coordinates.map(coordinates => ({
+                type: 'Feature',
+                geometry: {type: 'Polygon', coordinates}
+              }))
+            ]
+          : [...acc, p],
+      []
+    );
+
   return res;
 };
 
